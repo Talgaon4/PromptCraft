@@ -14,5 +14,5 @@ A REST API for automatically optimizing AI prompts based on user feedback scores
 
 1. **Clone the repository**
 ```bash
-git clone <your-repo-url>
-cd promptcraft-api
+git clone https://github.com/Talgaon4/PromptCraft
+cd promptcraft

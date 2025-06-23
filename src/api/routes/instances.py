@@ -1,8 +1,11 @@
+# src/api/routes/instances.py
 from fastapi import APIRouter, status, Depends, Query
 from src.database.database import Database
-from src.models.models import Prompt, PromptInstance, Response
+from src.models.models import PromptInstance, Response
+from src.services.feedback_service import FeedbackService
 from src.api.exceptions import APIException
 from src.api.schemas.base import APIResponse
+from src.services.prompt_service import PromptService
 from src.api.schemas.instance import (
     PromptInstanceCreate,
     ResponseCreate,
@@ -14,7 +17,6 @@ from src.api.schemas.instance import (
 import os
 import json
 
-router = APIRouter(prefix="/instances", tags=["Prompt Instances / Responses"])
 router = APIRouter(tags=["Prompt Instances / Responses"])
 
 # ----------------- helpers -----------------
@@ -33,21 +35,9 @@ def create_instance(
     payload: PromptInstanceCreate,
     db: Database = Depends(get_db),
 ):
-    with db.db_manager.get_session() as session:
-        # make sure prompt exists
-        if not session.get(Prompt, prompt_id):
-            raise APIException(404, "Prompt not found")
-
-        inst = PromptInstance(
-            prompt_id=prompt_id,
-            formatted_text=payload.formatted_text,
-            context=payload.context and str(payload.context),  # store as JSON string
-        )
-        session.add(inst)
-        session.commit()
-        session.refresh(inst)
-
-        dto = PromptInstanceOut.model_validate(inst, from_attributes=True)
+    svc  = PromptService(db)
+    inst = svc.add_instance(prompt_id, payload.formatted_text, payload.context)
+    dto = PromptInstanceOut.model_validate(inst, from_attributes=True)
     return APIResponse(data=dto)
 
 
@@ -62,26 +52,16 @@ def create_response(
     payload: ResponseCreate,
     db: Database = Depends(get_db),
 ):
-    with db.db_manager.get_session() as session:
-        if not session.get(PromptInstance, instance_id):
-            raise APIException(404, "Instance not found")
+    svc  = FeedbackService(db)
+    resp = svc.add_response(instance_id, content=payload.content, metadata=payload.metadata)
 
-        resp = Response(
-            prompt_instance_id=instance_id,
-            content=payload.content,
-            response_metadata=json.dumps(payload.metadata or {}),
-        )
-        session.add(resp)
-        session.commit()
-        session.refresh(resp)
-
-        dto = ResponseOut(
-            id=resp.id,
-            prompt_instance_id=resp.prompt_instance_id,
-            content=resp.content,
-            metadata=payload.metadata or {},
-            created_at=resp.created_at,
-        )
+    dto = ResponseOut(
+        id=resp.id,
+        prompt_instance_id=resp.prompt_instance_id,
+        content=resp.content,
+        metadata=payload.metadata or {},
+        created_at=resp.created_at,
+    )
     return APIResponse(data=dto)
 
 

@@ -12,7 +12,12 @@ class DatabaseManager:
             raise ValueError("DATABASE_URL environment variable is required")
         
         self.engine = create_engine(self.database_url, echo=False)
-        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        self.SessionLocal = sessionmaker(
+            autocommit=False,
+            autoflush=False,
+            expire_on_commit=False,   # ← שורה חדשה
+            bind=self.engine,
+        )
     
     def create_tables(self):
         """Create all tables if they don't exist"""

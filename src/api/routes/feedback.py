@@ -1,15 +1,14 @@
 from fastapi import APIRouter, status, Depends, Query
-from sqlalchemy import func
-from src.models.models import Prompt, PromptInstance
+from src.services.feedback_service import FeedbackService
 from src.database.database import Database
-from src.models.models import Response, Feedback, Prompt
 from src.api.schemas.base import APIResponse
 from src.api.schemas.feedback import (
     FeedbackCreate, FeedbackOut, PaginatedFeedback,
     PromptStats, OptimizationReadiness
 )
 from src.api.exceptions import APIException
-import os, json
+from src.services.prompt_service import PromptService
+import os
 
 router = APIRouter(tags=["Feedback / Stats"])
 
@@ -27,14 +26,9 @@ def add_feedback(
     payload: FeedbackCreate,
     db: Database = Depends(get_db),
 ):
-    with db.db_manager.get_session() as s:
-        resp = s.get(Response, response_id)
-        if not resp:
-            raise APIException(404, "Response not found")
-
-        fb = Feedback(response_id=response_id, score=payload.score)
-        s.add(fb); s.commit(); s.refresh(fb)
-        dto = FeedbackOut.model_validate(fb, from_attributes=True)
+    svc = FeedbackService(db)
+    fb  = svc.add_feedback(response_id, payload.score)
+    dto = FeedbackOut.model_validate(fb, from_attributes=True)
     return APIResponse(data=dto)
 
 # ---------- GET /prompts/{id}/feedback ----------
@@ -48,23 +42,10 @@ def prompt_feedback(
     limit: int = Query(10, ge=1, le=100),
     db: Database = Depends(get_db),
 ):
-    with db.db_manager.get_session() as s:
-        if not s.get(Prompt, prompt_id):
-            raise APIException(404, "Prompt not found")
-
-        q = (
-            s.query(Feedback)
-            .join(Response, Feedback.response_id == Response.id)
-            .join(PromptInstance, Response.prompt_instance_id == PromptInstance.id)
-            .filter(PromptInstance.prompt_id == prompt_id)
-        )
-        total = q.count()
-        items = (
-            q.offset(offset).limit(limit).all()
-        )
-        dto_items = [FeedbackOut.model_validate(fb, from_attributes=True) for fb in items]
-
-    payload = PaginatedFeedback(items=dto_items, total=total, offset=offset, limit=limit)
+    svc = FeedbackService(db)
+    orm_items, total = svc.list_by_prompt(prompt_id, offset, limit)
+    dto_items = [FeedbackOut.model_validate(fb, from_attributes=True) for fb in orm_items]
+    payload   = PaginatedFeedback(items=dto_items, total=total, offset=offset, limit=limit)
     return APIResponse(data=payload)
 
 # ---------- GET /feedback (global) ----------
@@ -74,11 +55,8 @@ def list_feedback(
     limit: int = Query(10, ge=1, le=100),
     db: Database = Depends(get_db),
 ):
-    with db.db_manager.get_session() as s:
-        q = s.query(Feedback)
-        total = q.count()
-        items = q.offset(offset).limit(limit).all()
-        dto_items = [FeedbackOut.model_validate(fb, from_attributes=True) for fb in items]
+    svc = FeedbackService(db)
+    dto_items, total = svc.list_all(offset, limit)
 
     return APIResponse(
         data=PaginatedFeedback(items=dto_items, total=total, offset=offset, limit=limit)
@@ -87,34 +65,14 @@ def list_feedback(
 # ---------- GET /prompts/{id}/stats ----------
 @router.get("/prompts/{prompt_id}/stats", response_model=APIResponse)
 def prompt_stats(prompt_id: str, db: Database = Depends(get_db)):
-    with db.db_manager.get_session() as s:
-        if not s.get(Prompt, prompt_id):
-            raise APIException(404, "Prompt not found")
-
-        total, avg = (
-                s.query(func.count(Feedback.id), func.avg(Feedback.score))
-                .join(Response, Feedback.response_id == Response.id)
-                .join(PromptInstance, Response.prompt_instance_id == PromptInstance.id)
-                .filter(PromptInstance.prompt_id == prompt_id)
-                .first()
-            )
-    return APIResponse(data=PromptStats(prompt_id=prompt_id, total_feedback=total, avg_score=avg))
+    svc = FeedbackService(db)
+    stats = svc.stats(prompt_id)
+    return APIResponse(data=PromptStats(**stats))
 
 # ---------- GET /prompts/{id}/optimization/readiness ----------
 @router.get("/prompts/{prompt_id}/optimization/readiness", response_model=APIResponse)
 def readiness(prompt_id: str, db: Database = Depends(get_db)):
-    MIN_SAMPLES = 5
-    with db.db_manager.get_session() as s:
-        if not s.get(Prompt, prompt_id):
-            raise APIException(404, "Prompt not found")
-
-        cnt = (
-            s.query(func.count(Feedback.id))
-            .join(Response, Feedback.response_id == Response.id)
-            .join(PromptInstance, Response.prompt_instance_id == PromptInstance.id)
-            .filter(PromptInstance.prompt_id == prompt_id)
-            .scalar()
-        )
-    ready = cnt >= MIN_SAMPLES
-    reason = "enough samples" if ready else f"need at least {MIN_SAMPLES-cnt} more samples"
-    return APIResponse(data=OptimizationReadiness(prompt_id=prompt_id, ready=ready, reason=reason))
+    psvc = PromptService(db)
+    readiness_dict = psvc.ready_for_optimization(prompt_id)
+    readiness_dict["prompt_id"] = prompt_id
+    return APIResponse(data=OptimizationReadiness(**readiness_dict))
